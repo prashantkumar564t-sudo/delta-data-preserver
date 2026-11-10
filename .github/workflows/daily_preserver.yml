@@ -1,0 +1,40 @@
+name: Daily Delta Options Preserver
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    # Daily at 12:30 UTC = 6:00 PM IST
+    - cron: '30 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  preserve-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyarrow
+
+      - name: Run Delta Preserver & Upload to Drive
+        env:
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+        run: |
+          TODAY_IST=$(date -u -d '+5 hours 30 minutes' +%Y-%m-%d)
+          echo "Preserving Delta Options for Expiry: $TODAY_IST"
+          python main.py "$TODAY_IST"
