@@ -1,38 +1,38 @@
-# Byte-compiled / optimized files
+# Python Bytecode & Cache
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Data files (do not commit large archives to git repo history)
-data/options/*
-!data/.gitkeep
-
-# Environment & Credentials
+# Environment, Secrets & Credentials
 .env
+.env.*
+!.env.example
 *.json
 !package*.json
 credentials.json
 service_account.json
+get_token.py
+
+# Local Data Storage & Cache
+data/
+*.parquet
+*.jsonl
+
+# Logs
+logs/
+*.log
 
 # Virtual Environments
 venv/
 .venv/
 env/
+ENV/
 
-# VS Code
+# IDE & OS
 .vscode/
-# Environment & Secrets (Never push to GitHub)
-.env
-service_account.json
-get_token.py
-
-# Local Data Cache (Drive will be the single source of truth)
-data/
-*.parquet
-*.jsonl
-
-# Python cache
-__pycache__/
-*.py[cod]
-.venv/
-env/
+.idea/
+.DS_Store
+Thumbs.db

@@ -2,7 +2,7 @@ import sys
 import time
 import os
 from datetime import datetime
-from src.config import IST, OPTIONS_DATA_DIR, RATE_LIMIT_SLEEP, DEFAULT_GDRIVE_FOLDER_ID
+from src.config import IST, OPTIONS_DATA_DIR, RATE_LIMIT_SLEEP
 from src.delta_client import (
     get_epoch_range,
     parse_option_symbol,
@@ -12,7 +12,13 @@ from src.delta_client import (
 from src.storage import save_records_to_parquet, verify_parquet_file
 from src.gdrive_uploader import upload_file_to_drive
 
-def run_preserver(target_date: str = "2026-11-09", underlying: str = "BTC"):
+def get_default_target_date() -> str:
+    """Returns today's date in IST timezone (YYYY-MM-DD)."""
+    return datetime.now(IST).strftime("%Y-%m-%d")
+
+def run_preserver(target_date: str = None, underlying: str = "BTC"):
+    if not target_date:
+        target_date = get_default_target_date()
     dt = datetime.strptime(target_date, "%Y-%m-%d")
     date_tag = dt.strftime("%d%m%y")
     from_ts, to_ts = get_epoch_range(target_date)
@@ -85,11 +91,17 @@ def run_preserver(target_date: str = "2026-11-09", underlying: str = "BTC"):
             verify_parquet_file(output_file)
             
             # --- AUTO UPLOAD TO GOOGLE DRIVE VIA OAUTH ---
-            folder_id = os.getenv("GDRIVE_FOLDER_ID", DEFAULT_GDRIVE_FOLDER_ID)
-            upload_file_to_drive(output_file, folder_id)
+            folder_id = os.getenv("GDRIVE_FOLDER_ID")
+            upload_success = upload_file_to_drive(output_file, folder_id)
+            if not upload_success:
+                print(f"[CRITICAL] Google Drive upload failed for {output_file}!")
+                sys.exit(1)
+        else:
+            print(f"[CRITICAL] Failed to write Parquet file to {output_file}!")
+            sys.exit(1)
     else:
         print("[!] Zero trades found across all contracts. No file written.")
 
 if __name__ == "__main__":
-    date_arg = sys.argv[1] if len(sys.argv) > 1 else "2026-11-09"
+    date_arg = sys.argv[1] if len(sys.argv) > 1 else None
     run_preserver(target_date=date_arg, underlying="BTC")

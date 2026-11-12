@@ -33,8 +33,8 @@ def parse_option_symbol(symbol: str) -> tuple[str, str, int]:
         opt_type = "CE" if parts[0].upper() == "C" else "PE"
         underlying = parts[1]
         try:
-            strike = int(parts[2])
-        except ValueError:
+            strike = int(float(parts[2]))
+        except (ValueError, TypeError):
             strike = 0
         return opt_type, underlying, strike
     return "UNKNOWN", "BTC", 0

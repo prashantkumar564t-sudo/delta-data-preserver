@@ -44,14 +44,14 @@ def upload_file_to_drive(
         print(f"[!] Local file not found: {local_filepath}")
         return False
 
-    # Pull credentials from environment if not passed directly
-    f_id = folder_id or os.getenv("GDRIVE_FOLDER_ID", "1aVINc1rkrbnaVfATjkMj8yw-JlidKFpe")
+    # Pull credentials strictly from environment if not passed directly
+    f_id = folder_id or os.getenv("GDRIVE_FOLDER_ID")
     c_id = client_id or os.getenv("GDRIVE_CLIENT_ID")
     c_secret = client_secret or os.getenv("GDRIVE_CLIENT_SECRET")
     r_token = refresh_token or os.getenv("GDRIVE_REFRESH_TOKEN")
 
-    if not (c_id and c_secret and r_token):
-        print("[!] Missing OAuth credentials: GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, or GDRIVE_REFRESH_TOKEN.")
+    if not (f_id and c_id and c_secret and r_token):
+        print("[!] Missing required credentials: GDRIVE_FOLDER_ID, GDRIVE_CLIENT_ID, GDRIVE_CLIENT_SECRET, or GDRIVE_REFRESH_TOKEN.")
         return False
 
     filename = os.path.basename(local_filepath)
@@ -110,8 +110,8 @@ def upload_file_to_drive(
         return False
 
 if __name__ == "__main__":
-    from src.config import load_env, DEFAULT_GDRIVE_FOLDER_ID
+    from src.config import load_env
     load_env()
-    target_folder = os.getenv("GDRIVE_FOLDER_ID", DEFAULT_GDRIVE_FOLDER_ID)
+    target_folder = os.getenv("GDRIVE_FOLDER_ID")
     test_file = os.path.join("data", "options", "BTC", "BTC_options_2026-11-09.parquet")
     upload_file_to_drive(test_file, target_folder)

@@ -45,5 +45,5 @@ RATE_LIMIT_SLEEP = 0.1  # seconds between strike candle requests
 MAX_RETRIES = 3
 RETRY_DELAY = 1.0  # seconds
 
-# --- GOOGLE DRIVE DEFAULT FALLBACK ---
-DEFAULT_GDRIVE_FOLDER_ID = "1aVINc1rkrbnaVfATjkMj8yw-JlidKFpe"
+# --- GOOGLE DRIVE SETTINGS ---
+GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
