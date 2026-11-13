@@ -1,13 +1,13 @@
-name: Daily Delta Options Preserver
+name: Daily Delta Preserver v2.0
 
 on:
   schedule:
-    # Daily at 12:30 UTC = 6:00 PM IST
-    - cron: '30 12 * * *'
+    # Daily at 12:45 UTC = 6:15 PM IST
+    - cron: '45 12 * * *'
   workflow_dispatch:
     inputs:
       target_date:
-        description: 'Expiry Date to Preserve (YYYY-MM-DD)'
+        description: 'Target Date to Preserve (YYYY-MM-DD)'
         required: false
         default: ''
 
@@ -36,11 +36,13 @@ jobs:
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ -n "${{ github.event.inputs.target_date }}" ]; then
             TARGET_DATE="${{ github.event.inputs.target_date }}"
           else
             TARGET_DATE=$(date -u -d '+5 hours 30 minutes' +%Y-%m-%d)
           fi
-          echo "Preserving Delta Options for Expiry: $TARGET_DATE"
+          echo "Preserving Delta Futures & Options for Date: $TARGET_DATE"
           python main.py "$TARGET_DATE"
