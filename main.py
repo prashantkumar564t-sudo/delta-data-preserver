@@ -2,23 +2,40 @@ import sys
 import time
 import os
 from datetime import datetime
-from src.config import IST, OPTIONS_DATA_DIR, RATE_LIMIT_SLEEP
+from src.config import (
+    load_env,
+    IST,
+    FUTURES_DATA_DIR,
+    OPTIONS_DATA_DIR,
+    FUTURES_ASSETS,
+    OPTIONS_ASSETS
+)
 from src.delta_client import (
     get_epoch_range,
-    parse_option_symbol,
-    fetch_expired_symbols,
-    fetch_contract_candles
+    fetch_perpetual_candles,
+    fetch_options_dataset
 )
-from src.storage import save_records_to_parquet, verify_parquet_file
+from src.storage import (
+    save_futures_records_to_parquet,
+    save_options_records_to_parquet
+)
+from src.auditor import audit_parquet_file, format_audit_log
 from src.gdrive_uploader import upload_file_to_drive
+from src.telegram_notifier import send_pipeline_report, send_failure_alert
+
+# Auto-load local environment if present
+load_env()
 
 def get_default_target_date() -> str:
     """Returns today's date in IST timezone (YYYY-MM-DD)."""
     return datetime.now(IST).strftime("%Y-%m-%d")
 
-def run_preserver(target_date: str = None, underlying: str = "BTC"):
+def run_pipeline(target_date: str = None, run_futures: bool = True, run_options: bool = True, specific_asset: str = None):
+    start_time = time.time()
+
     if not target_date:
         target_date = get_default_target_date()
+
     dt = datetime.strptime(target_date, "%Y-%m-%d")
     date_tag = dt.strftime("%d%m%y")
     from_ts, to_ts = get_epoch_range(target_date)
@@ -26,82 +43,178 @@ def run_preserver(target_date: str = None, underlying: str = "BTC"):
     start_readable = datetime.fromtimestamp(from_ts, IST).strftime("%Y-%m-%d %H:%M:%S IST")
     end_readable = datetime.fromtimestamp(to_ts, IST).strftime("%Y-%m-%d %H:%M:%S IST")
 
-    print(f"\n{'='*60}")
-    print(f"DELTA DATA PRESERVER - PIPELINE RUN")
-    print(f"Underlying   : {underlying}")
-    print(f"Expiry Date  : {target_date} (Tag: {date_tag})")
-    print(f"Window Start : {start_readable} ({from_ts})")
-    print(f"Window End   : {end_readable} ({to_ts})")
-    print(f"{'='*60}\n")
+    print(f"\n{'='*70}")
+    print(f"DELTA DATA PRESERVER v2.0 - MULTI-ASSET & ALL-EXPIRIES PIPELINE")
+    print(f"Target Expiry Date : {target_date} (Tag: {date_tag})")
+    print(f"24-Hour IST Window : {start_readable} ({from_ts}) -> {end_readable} ({to_ts})")
+    print(f"{'='*70}\n")
 
-    symbols = fetch_expired_symbols(date_tag, underlying=underlying)
-    print(f"[*] Found {len(symbols)} candidate expired contracts.")
+    summary = {
+        "target_date": target_date,
+        "duration_sec": 0.0,
+        "overall_status": "SUCCESS",
+        "futures": [],
+        "options": []
+    }
 
-    if not symbols:
-        print("[!] No contracts to process. Exiting.")
-        return
+    pipeline_errors = []
+    folder_id = os.getenv("GDRIVE_FOLDER_ID")
 
-    all_records = []
-    active_count = 0
+    # ==========================================
+    # STAGE 1: PERPETUAL FUTURES (5 ASSETS)
+    # ==========================================
+    if run_futures:
+        print(f"\n--- [STAGE 1] PERPETUAL FUTURES PIPELINE (5 ASSETS) ---")
+        futures_to_run = (
+            {specific_asset: FUTURES_ASSETS[specific_asset]} 
+            if specific_asset and specific_asset in FUTURES_ASSETS 
+            else FUTURES_ASSETS
+        )
 
-    print("[*] Streaming and auditing contract candles (24-Hour Cycle)...")
-    for idx, sym in enumerate(symbols, start=1):
-        opt_type, base_asset, strike = parse_option_symbol(sym)
-        data = fetch_contract_candles(sym, from_ts, to_ts)
+        for asset, symbol in futures_to_run.items():
+            try:
+                records = fetch_perpetual_candles(symbol, asset, from_ts, to_ts)
+                if not records:
+                    print(f"[!] Warning: No candle data received for {asset} ({symbol}).")
+                    continue
 
-        timestamps = data.get("t", []) if data else []
-        candles_len = len(timestamps)
+                output_file = os.path.join(FUTURES_DATA_DIR, asset, f"{asset}_futures_{target_date}.parquet")
+                saved = save_futures_records_to_parquet(records, output_file)
+                if not saved:
+                    pipeline_errors.append(f"Failed to write Parquet for {asset} futures.")
+                    continue
 
-        if candles_len > 0:
-            active_count += 1
-            print(f"  [{idx:02d}/{len(symbols):02d}] [ACTIVE] {sym:<25} -> {candles_len} candles")
+                # Run automated audit
+                audit_res = audit_parquet_file(output_file, expected_type="futures")
+                print(format_audit_log(audit_res))
+                if not audit_res.get("is_valid"):
+                    err = f"Audit failed for {asset} futures: {audit_res.get('errors')}"
+                    pipeline_errors.append(err)
+                    continue
 
-            for i in range(candles_len):
-                bar_time = timestamps[i]
-                readable_ist = datetime.fromtimestamp(bar_time, IST).strftime("%Y-%m-%d %H:%M:%S")
+                # Upload to Google Drive and verify under Crypto/Futures
+                upload_res = upload_file_to_drive(output_file, folder_id, subfolder_path="Crypto/Futures")
+                drive_verified = upload_res.get("success", False) and upload_res.get("size_bytes", 0) > 0
 
-                record = {
-                    "timestamp": bar_time,
-                    "datetime_ist": readable_ist,
-                    "symbol": sym,
-                    "underlying": base_asset,
-                    "strike": strike,
-                    "type": opt_type,
-                    "open": float(data["o"][i]),
-                    "high": float(data["h"][i]),
-                    "low": float(data["l"][i]),
-                    "close": float(data["c"][i]),
-                    "volume": float(data["v"][i])
-                }
-                all_records.append(record)
-        else:
-            print(f"  [{idx:02d}/{len(symbols):02d}] [EMPTY]  {sym:<25} -> 0 candles")
+                if not drive_verified:
+                    err = f"Google Drive verification failed for {asset} futures: {upload_res.get('error')}"
+                    pipeline_errors.append(err)
 
-        time.sleep(RATE_LIMIT_SLEEP)
+                summary["futures"].append({
+                    "asset": asset,
+                    "symbol": symbol,
+                    "rows": audit_res.get("total_rows", 0),
+                    "size_kb": audit_res.get("file_size_kb", 0.0),
+                    "drive_verified": drive_verified,
+                    "drive_file_id": upload_res.get("file_id")
+                })
 
-    print(f"\n[*] Processing Complete:")
-    print(f"    - Scanned Contracts : {len(symbols)}")
-    print(f"    - Active Contracts  : {active_count}")
-    print(f"    - Total Data Points : {len(all_records)}")
+            except Exception as e:
+                err = f"Unexpected exception in futures pipeline for {asset}: {e}"
+                print(f"[CRITICAL] {err}")
+                pipeline_errors.append(err)
 
-    if all_records:
-        output_file = os.path.join(OPTIONS_DATA_DIR, underlying, f"{underlying}_options_{target_date}.parquet")
-        success = save_records_to_parquet(all_records, output_file)
-        if success:
-            verify_parquet_file(output_file)
-            
-            # --- AUTO UPLOAD TO GOOGLE DRIVE VIA OAUTH ---
-            folder_id = os.getenv("GDRIVE_FOLDER_ID")
-            upload_success = upload_file_to_drive(output_file, folder_id)
-            if not upload_success:
-                print(f"[CRITICAL] Google Drive upload failed for {output_file}!")
-                sys.exit(1)
-        else:
-            print(f"[CRITICAL] Failed to write Parquet file to {output_file}!")
-            sys.exit(1)
+    # ==========================================
+    # STAGE 2: OPTIONS (ALL EXPIRIES - 3 ASSETS)
+    # ==========================================
+    if run_options:
+        print(f"\n--- [STAGE 2] OPTIONS ALL-EXPIRIES PIPELINE (3 ASSETS) ---")
+        options_to_run = (
+            {specific_asset: OPTIONS_ASSETS[specific_asset]} 
+            if specific_asset and specific_asset in OPTIONS_ASSETS 
+            else OPTIONS_ASSETS
+        )
+
+        for asset, underlying in options_to_run.items():
+            try:
+                records = fetch_options_dataset(underlying, date_tag, from_ts, to_ts)
+                if not records:
+                    print(f"[!] Warning: No options candle data found for {asset} ({underlying}).")
+                    continue
+
+                output_file = os.path.join(OPTIONS_DATA_DIR, asset, f"{asset}_options_{target_date}.parquet")
+                saved = save_options_records_to_parquet(records, output_file)
+                if not saved:
+                    pipeline_errors.append(f"Failed to write Parquet for {asset} options.")
+                    continue
+
+                # Run automated audit
+                audit_res = audit_parquet_file(output_file, expected_type="options")
+                print(format_audit_log(audit_res))
+                if not audit_res.get("is_valid"):
+                    err = f"Audit failed for {asset} options: {audit_res.get('errors')}"
+                    pipeline_errors.append(err)
+                    continue
+
+                # Upload to Google Drive and verify under Crypto/Options
+                upload_res = upload_file_to_drive(output_file, folder_id, subfolder_path="Crypto/Options")
+                drive_verified = upload_res.get("success", False) and upload_res.get("size_bytes", 0) > 0
+
+                if not drive_verified:
+                    err = f"Google Drive verification failed for {asset} options: {upload_res.get('error')}"
+                    pipeline_errors.append(err)
+
+                summary["options"].append({
+                    "asset": asset,
+                    "underlying": underlying,
+                    "contracts": audit_res.get("unique_symbols", 0),
+                    "expiries": audit_res.get("unique_expiries", 0),
+                    "rows": audit_res.get("total_rows", 0),
+                    "size_kb": audit_res.get("file_size_kb", 0.0),
+                    "drive_verified": drive_verified,
+                    "drive_file_id": upload_res.get("file_id")
+                })
+
+            except Exception as e:
+                err = f"Unexpected exception in options pipeline for {asset}: {e}"
+                print(f"[CRITICAL] {err}")
+                pipeline_errors.append(err)
+
+    # ==========================================
+    # STAGE 3: TELEGRAM NOTIFICATION & FINALIZE
+    # ==========================================
+    duration = time.time() - start_time
+    summary["duration_sec"] = duration
+
+    if pipeline_errors:
+        summary["overall_status"] = "FAILED"
+        print(f"\n[CRITICAL] Pipeline encountered {len(pipeline_errors)} error(s):")
+        for e in pipeline_errors:
+            print(f"  - {e}")
+        send_failure_alert("\n".join(pipeline_errors), target_date)
     else:
-        print("[!] Zero trades found across all contracts. No file written.")
+        summary["overall_status"] = "SUCCESS"
+        print(f"\n[✓] ALL STAGES VERIFIED & SUCCESSFULLY SAVED TO GOOGLE DRIVE!")
+
+    send_pipeline_report(summary)
+
+    print(f"\n{'='*70}")
+    print(f"PIPELINE RUN COMPLETED in {duration:.2f}s | STATUS: {summary['overall_status']}")
+    print(f"{'='*70}\n")
+
+    if summary["overall_status"] != "SUCCESS":
+        sys.exit(1)
 
 if __name__ == "__main__":
-    date_arg = sys.argv[1] if len(sys.argv) > 1 else None
-    run_preserver(target_date=date_arg, underlying="BTC")
+    date_input = None
+    run_fut = True
+    run_opt = True
+    asset_filter = None
+
+    args = sys.argv[1:]
+    for arg in args:
+        if arg == "--futures-only":
+            run_opt = False
+        elif arg == "--options-only":
+            run_fut = False
+        elif arg.startswith("--asset="):
+            asset_filter = arg.split("=", 1)[1].upper()
+        elif not arg.startswith("--") and date_input is None:
+            date_input = arg
+
+    run_pipeline(
+        target_date=date_input,
+        run_futures=run_fut,
+        run_options=run_opt,
+        specific_asset=asset_filter
+    )
